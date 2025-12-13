@@ -332,6 +332,17 @@ impl CFLoader {
         self.read_flash(bootloader::TARGET_NRF51, start_address, length).await
     }
 
+    /// Reset the Crazyflie and boot into normal firmware
+    pub async fn reset_to_firmware(&mut self) -> anyhow::Result<()> {
+        let reset_init_command = vec![0xFF, bootloader::TARGET_NRF51, 0xFF];
+        self.bllink.send(&reset_init_command).await?;
+
+        let reset_command = vec![0xFF, bootloader::TARGET_NRF51, 0xF0, 0x01];
+        self.bllink.send(&reset_command).await?;
+
+        Ok(())
+    }
+
 
 
 }
