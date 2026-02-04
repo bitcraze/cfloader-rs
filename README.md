@@ -1,3 +1,48 @@
-# Crazyflie 2.x Bootloader client lib and tools
+# cfloader-rs
 
-This repos is an experimental work in progress.
+Rust library for interfacing with the Crazyflie 2.x bootloader over Crazyradio.
+
+## Supported platforms
+
+- Crazyflie 2.0
+- Crazyflie 2.1
+- Crazyflie Bolt
+- Crazyflie Brushless 2.1
+
+## Requirements
+
+- Crazyradio USB dongle
+- Crazyflie in bootloader mode (hold power button for ~2 seconds when powering on)
+
+## Usage
+
+Add to your `Cargo.toml`:
+
+```toml
+[dependencies]
+cfloader = "0.1"
+```
+
+## Example
+
+```rust
+use cfloader::{Bllink, CFLoader};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let bllink = Bllink::new(None).await?;
+    let mut loader = CFLoader::new(bllink).await?;
+
+    // Flash firmware to STM32
+    let firmware = std::fs::read("firmware.bin")?;
+    loader.flash_stm32(0x8000, &firmware).await?;
+
+    // Reset to normal operation
+    loader.reset_to_firmware().await?;
+    Ok(())
+}
+```
+
+## License
+
+See LICENSE file.

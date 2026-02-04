@@ -6,6 +6,31 @@ use crate::Bllink;
 use crate::bootloader::{self, Bootloader};
 use crate::packets::InfoPacket;
 
+/// High-level interface for Crazyflie 2.x bootloader operations
+///
+/// This struct provides a convenient way to interact with both the nRF51822 and STM32F405
+/// bootloaders on the Crazyflie 2.x platform. It handles the low-level communication
+/// details and provides high-level methods for common operations like flashing firmware
+/// and reading flash memory.
+///
+/// # Example
+///
+/// ```no_run
+/// # async fn example() -> anyhow::Result<()> {
+/// use cfloader::{Bllink, CFLoader};
+///
+/// let bllink = Bllink::new(None).await?;
+/// let mut loader = CFLoader::new(bllink).await?;
+///
+/// // Flash firmware to STM32
+/// let firmware = std::fs::read("firmware.bin")?;
+/// loader.flash_stm32(0x8000, &firmware).await?;
+///
+/// // Reset to normal operation
+/// loader.reset_to_firmware().await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct CFLoader {
     bllink: Bllink,
     nrf51: Bootloader,
@@ -15,6 +40,22 @@ pub struct CFLoader {
 }
 
 impl CFLoader {
+    /// Create a new CFLoader instance
+    ///
+    /// Initializes both the nRF51822 and STM32F405 bootloader interfaces and
+    /// retrieves their information packets.
+    ///
+    /// # Arguments
+    ///
+    /// * `bllink` - An established Bllink connection to the Crazyflie bootloader
+    ///
+    /// # Returns
+    ///
+    /// A new `CFLoader` instance ready for bootloader operations
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if communication with either bootloader fails
     pub async fn new(mut bllink: Bllink) -> anyhow::Result<Self> {
         let nrf51 = Bootloader::new(bootloader::TARGET_NRF51);
         let stm32 = Bootloader::new(bootloader::TARGET_STM32);
@@ -32,6 +73,11 @@ impl CFLoader {
         })
     }
 
+    /// Get a formatted string with info from both bootloaders
+    ///
+    /// # Returns
+    ///
+    /// A formatted string containing information about both the nRF51 and STM32 bootloaders
     pub async fn get_info(&mut self) -> anyhow::Result<String> {
         // Return info from both bootloaders
         Ok(format!(
@@ -237,6 +283,15 @@ impl CFLoader {
     }
 
     /// Flash an image to the STM32 bootloader with progress callback
+    ///
+    /// Convenience method that wraps [`flash_image_with_progress`](Self::flash_image_with_progress)
+    /// for the STM32 target.
+    ///
+    /// # Arguments
+    ///
+    /// * `start_address` - The starting address in flash where the image should be written
+    /// * `image` - The image data to flash
+    /// * `progress_callback` - Optional callback function to report progress (bytes_written, total_bytes)
     pub async fn flash_stm32_with_progress<F>(&mut self, start_address: u32, image: &[u8], progress_callback: Option<F>) -> anyhow::Result<()> 
     where
         F: FnMut(usize, usize),
@@ -245,6 +300,15 @@ impl CFLoader {
     }
 
     /// Flash an image to the nRF51 bootloader with progress callback
+    ///
+    /// Convenience method that wraps [`flash_image_with_progress`](Self::flash_image_with_progress)
+    /// for the nRF51 target.
+    ///
+    /// # Arguments
+    ///
+    /// * `start_address` - The starting address in flash where the image should be written
+    /// * `image` - The image data to flash
+    /// * `progress_callback` - Optional callback function to report progress (bytes_written, total_bytes)
     pub async fn flash_nrf51_with_progress<F>(&mut self, start_address: u32, image: &[u8], progress_callback: Option<F>) -> anyhow::Result<()> 
     where
         F: FnMut(usize, usize),
@@ -253,11 +317,25 @@ impl CFLoader {
     }
 
     /// Flash an image to the STM32 bootloader
+    ///
+    /// Convenience method that wraps [`flash_image`](Self::flash_image) for the STM32 target.
+    ///
+    /// # Arguments
+    ///
+    /// * `start_address` - The starting address in flash where the image should be written
+    /// * `image` - The image data to flash
     pub async fn flash_stm32(&mut self, start_address: u32, image: &[u8]) -> anyhow::Result<()> {
         self.flash_image(bootloader::TARGET_STM32, start_address, image).await
     }
 
     /// Flash an image to the nRF51 bootloader
+    ///
+    /// Convenience method that wraps [`flash_image`](Self::flash_image) for the nRF51 target.
+    ///
+    /// # Arguments
+    ///
+    /// * `start_address` - The starting address in flash where the image should be written
+    /// * `image` - The image data to flash
     pub async fn flash_nrf51(&mut self, start_address: u32, image: &[u8]) -> anyhow::Result<()> {
         self.flash_image(bootloader::TARGET_NRF51, start_address, image).await
     }
@@ -270,7 +348,7 @@ impl CFLoader {
     /// * `length` - The number of bytes to read
     /// 
     /// # Returns
-    /// A Vec<u8> containing the read flash content
+    /// A `Vec<u8>` containing the read flash content
     pub async fn read_flash(&mut self, target: u8, start_address: u32, length: u32) -> anyhow::Result<Vec<u8>> {
         // Get the appropriate bootloader info
         let page_size = match target {
@@ -323,16 +401,47 @@ impl CFLoader {
     }
 
     /// Read flash content from the STM32 bootloader
+    ///
+    /// Convenience method that wraps [`read_flash`](Self::read_flash) for the STM32 target.
+    ///
+    /// # Arguments
+    ///
+    /// * `start_address` - The starting address in flash to read from
+    /// * `length` - The number of bytes to read
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<u8>` containing the read flash content
     pub async fn read_stm32_flash(&mut self, start_address: u32, length: u32) -> anyhow::Result<Vec<u8>> {
         self.read_flash(bootloader::TARGET_STM32, start_address, length).await
     }
 
-    /// Read flash content from the nRF51 bootloader  
+    /// Read flash content from the nRF51 bootloader
+    ///
+    /// Convenience method that wraps [`read_flash`](Self::read_flash) for the nRF51 target.
+    ///
+    /// # Arguments
+    ///
+    /// * `start_address` - The starting address in flash to read from
+    /// * `length` - The number of bytes to read
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<u8>` containing the read flash content
     pub async fn read_nrf51_flash(&mut self, start_address: u32, length: u32) -> anyhow::Result<Vec<u8>> {
         self.read_flash(bootloader::TARGET_NRF51, start_address, length).await
     }
 
     /// Reset the Crazyflie and boot into normal firmware
+    ///
+    /// Sends the reset initialization and reset commands to the nRF51 bootloader,
+    /// which will cause the Crazyflie to exit bootloader mode and boot into
+    /// normal firmware operation.
+    ///
+    /// # Note
+    ///
+    /// After calling this method, the Bllink connection will no longer be valid
+    /// as the Crazyflie will be running normal firmware instead of the bootloader.
     pub async fn reset_to_firmware(&mut self) -> anyhow::Result<()> {
         let reset_init_command = vec![0xFF, bootloader::TARGET_NRF51, 0xFF];
         self.bllink.send(&reset_init_command).await?;

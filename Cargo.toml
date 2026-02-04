@@ -1,3 +1,15 @@
-[workspace]
-resolver = "3"
-members = ["cfloader", "cfloader-ffi", "cfloader-tools"]
+[package]
+authors = ["Arnaud Taffanel <arnaud@bitcraze.io>"]
+name = "cfloader"
+version = "0.1.0"
+edition = "2024"
+
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.0", features = ["derive"] }
+crazyradio = { version = "0.3.0", features = ["async", "shared_radio"] }
+tokio = { version = "1.46.1", features = ["full"] }
+
+[dev-dependencies]
+indicatif = "0.18"

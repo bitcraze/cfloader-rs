@@ -1,11 +1,17 @@
-// Crazyflie bootloader link implementation
-// The bootloader link is very similar to the Crazylfie link over ESB except that it is
-// based on a very early iteration and does not implement safelink
-// We will be using is as a half-duplex link in this case, only sending or receiving at a time
-
 use crazyradio::{Crazyradio, SharedCrazyradio};
 use std::time::Duration;
 
+
+/// # Crazyflie bootloader link
+/// 
+/// The bootloader link is very similar to the Crazylfie link over ESB except that it is
+/// based on a very early iteration and does not implement safelink.
+/// 
+/// As such the link requires some special handling in order to work properly. Hence this
+/// implementation is kept separate from crazyflie-link.
+/// 
+/// For simplicity, this implementation is used as a half-duplex link, only sending or
+/// receiving at any one time
 pub struct Bllink {
     radio: SharedCrazyradio,
     address: [u8; 5],
@@ -16,20 +22,64 @@ const DEFAULT_ADDRESS: [u8; 5] = [0xE7, 0xE7, 0xE7, 0xE7, 0xE7];
 const BOOTLOADER_CHANNEL: u8 = 0; // Bootloader channel
 const MAX_RETRIES: usize = 10; // Maximum number of retries for packet transmission
 
+
+
 impl Bllink {
+    /// Create a new Bllink instance
+    /// 
+    /// This functioon uses the first found Crazyradio USB device to create the link.
+    /// 
+    /// # Arguments
+    /// * `address` - Optional 5-byte address to use for the link. If None, the default address is used.
+    ///
+    /// # Returns
+    /// A Result containing the Bllink instance or an error if the radio could not be opened.
+    /// 
     pub async fn new(address: Option<&[u8; 5]>) -> anyhow::Result<Self> {
         let address = address.unwrap_or(&DEFAULT_ADDRESS);
 
         let radio = Crazyradio::open_first_async().await?;
         let radio = SharedCrazyradio::new(radio);
 
-        // TODO: Check connectivity by sending a ping or similar
+        Ok(Bllink { radio, channel: crazyradio::Channel::from_number(BOOTLOADER_CHANNEL).unwrap(), address: *address })
+    }
+
+    /// Create a new Bllink instance with an existing radio
+    /// 
+    /// This function creates a Bllink instance using an already-create SharedCrazyradio.
+    /// This allows to use the bootloader in a client that already has Crazyradio instances.
+    /// 
+    /// # Arguments
+    /// * `radio` - An existing SharedCrazyradio instance to use for the link
+    /// * `address` - Optional 5-byte address to use for the link. If None, the default address is used.
+    ///
+    /// # Returns
+    /// A Result containing the Bllink instance or an error.
+    /// 
+    pub async fn new_with_radio(radio: SharedCrazyradio,address: Option<&[u8; 5]>) -> anyhow::Result<Self> {
+        let address = address.unwrap_or(&DEFAULT_ADDRESS);
 
         Ok(Bllink { radio, channel: crazyradio::Channel::from_number(BOOTLOADER_CHANNEL).unwrap(), address: *address })
     }
 
 
-    // Send a packet as request, expect one packet as response
+    /// Send a packet as request, expect one packet as response matching the request data
+    ///
+    /// This method sends a packet and waits for a response packet that starts with the same data as the request.
+    /// If no valid response is received within the timeout duration, the request is retried up to MAX_RETRIES times.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - The packet data to send
+    /// * `timeout_duration` - Maximum time to wait for a response
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<u8>` containing the response data
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no valid response is received after MAX_RETRIES attempts
     pub async fn request(&mut self, data: &[u8], timeout_duration: Duration) -> anyhow::Result<Vec<u8>> {
         for attempt in 0..MAX_RETRIES {
             match self.try_request(data, timeout_duration).await {
@@ -49,7 +99,25 @@ impl Bllink {
         unreachable!()
     }
 
-    // Send a packet as request, expect one packet as response. The first n bytes of the response must match the request
+    /// Send a packet as request with partial response matching
+    ///
+    /// Similar to [`request`](Self::request), but allows specifying how many bytes of the response
+    /// must match the request. This is useful for cases where the response may contain additional
+    /// data after the initial matching bytes.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - The packet data to send
+    /// * `match_length` - Number of bytes from the start of the response that must match the request
+    /// * `timeout_duration` - Maximum time to wait for a response
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<u8>` containing the response data
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no valid response is received after MAX_RETRIES attempts
     pub async fn request_match_response(&mut self, data: &[u8], match_length: usize, timeout_duration: Duration) -> anyhow::Result<Vec<u8>> {
         for attempt in 0..MAX_RETRIES {
             match self.try_request_match_response(data, match_length, timeout_duration).await {
@@ -168,12 +236,39 @@ impl Bllink {
         Ok(answer)
     }
 
-    // Send a packet as request, expect no response
+    /// Send a packet without expecting a response
+    ///
+    /// Sends a packet and waits only for acknowledgment (ACK) from the radio.
+    /// Uses a default timeout of 1000ms.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - The packet data to send
+    ///
+    /// # Returns
+    ///
+    /// An empty result indicating success or failure
     pub async fn send(&mut self, data: &[u8]) -> anyhow::Result<()> {
         self.send_with_timeout(data, Duration::from_millis(1000)).await
     }
 
-    // Send a packet with timeout and retry logic, expect no response
+    /// Send a packet with custom timeout, without expecting a response
+    ///
+    /// Sends a packet and waits only for acknowledgment (ACK) from the radio.
+    /// Retries up to MAX_RETRIES times if no ACK is received.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - The packet data to send
+    /// * `timeout_duration` - Maximum time to wait for ACK on each attempt
+    ///
+    /// # Returns
+    ///
+    /// An empty result indicating success or failure
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no ACK is received after MAX_RETRIES attempts
     pub async fn send_with_timeout(&mut self, data: &[u8], timeout_duration: Duration) -> anyhow::Result<()> {
         for attempt in 0..MAX_RETRIES {
             match self.try_send(data, timeout_duration).await {
