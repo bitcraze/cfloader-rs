@@ -9,11 +9,6 @@ Rust library for interfacing with the Crazyflie 2.x bootloader over Crazyradio.
 - Crazyflie Bolt
 - Crazyflie Brushless 2.1
 
-## Requirements
-
-- Crazyradio USB dongle
-- Crazyflie in bootloader mode (hold power button for ~2 seconds when powering on)
-
 ## Usage
 
 Add to your `Cargo.toml`:
@@ -22,6 +17,8 @@ Add to your `Cargo.toml`:
 [dependencies]
 cfloader = "0.1"
 ```
+
+This crate is using `async` and requires `Tokio`.
 
 ## Example
 
