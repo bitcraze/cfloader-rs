@@ -12,7 +12,7 @@ keywords = ["crazyflie"]
 anyhow = "1.0.102"
 crazyradio = { version = "0.6.0", features = ["async", "shared_radio"] }
 crazyflie-link = "0.4.3"
-crazyflie-lib = { path = "/home/rik/dev/crazyflie-lib-rs" }
+crazyflie-lib = { git = "https://github.com/bitcraze/crazyflie-lib-rs.git", rev = "0d5eb0c6" }
 tokio = { version = "1.50.0", features = ["full"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"

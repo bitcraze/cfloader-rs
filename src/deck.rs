@@ -142,12 +142,6 @@ async fn flash_single_deck(
         }
     }
 
-    // Set the new firmware size before writing data.
-    // The firmware uses this to configure the flash operation (erase size, block count).
-    section
-        .set_new_firmware_size(data.len() as u32)
-        .await?;
-
     let total_bytes = data.len();
     let name_for_cb = deck_name.to_string();
     let progress_ref = &mut *progress;
@@ -163,7 +157,7 @@ async fn flash_single_deck(
     };
 
     section
-        .write_with_progress(0, data, progress_callback)
+        .flash_firmware_with_progress(data, progress_callback)
         .await?;
 
     Ok(())

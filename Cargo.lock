@@ -211,6 +211,7 @@ dependencies = [
 [[package]]
 name = "crazyflie-lib"
 version = "0.7.1"
+source = "git+https://github.com/bitcraze/crazyflie-lib-rs.git?rev=0d5eb0c6#0d5eb0c688f6426e8ecf5b748c4cbd4145ecdbae"
 dependencies = [
  "async-broadcast",
  "async-stream",
