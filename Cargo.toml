@@ -1,7 +1,7 @@
 [package]
 authors = ["Arnaud Taffanel <arnaud@bitcraze.io>"]
 name = "cfloader"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Crate to interface with the Over-the-Air bootloader of Crazyflie 2.x"
 license = "MIT OR Apache-2.0"
@@ -9,10 +9,16 @@ keywords = ["crazyflie"]
 
 
 [dependencies]
-anyhow = "1"
-clap = { version = "4.0", features = ["derive"] }
-crazyradio = { version = "0.3.0", features = ["async", "shared_radio"] }
-tokio = { version = "1.46.1", features = ["full"] }
+anyhow = "1.0.102"
+crazyradio = { version = "0.6.0", features = ["async", "shared_radio"] }
+crazyflie-link = "0.4.3"
+crazyflie-lib = { path = "/home/rik/dev/crazyflie-lib-rs" }
+tokio = { version = "1.50.0", features = ["full"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+zip = "8.4.0"
+hex = "0.4.3"
+futures = "0.3"
 
 [dev-dependencies]
 indicatif = "0.18"

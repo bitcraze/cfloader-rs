@@ -1,6 +1,9 @@
-# cfloader-rs
+# cfloader
 
-Rust library for interfacing with the Crazyflie 2.x bootloader over Crazyradio.
+Rust crate for flashing firmware to Crazyflie 2.x quadcopters over Crazyradio.
+
+Handles the full flash sequence: boot mode entry, STM32/nRF51 firmware,
+softdevice management, and expansion deck firmware updates.
 
 ## Supported platforms
 
@@ -15,12 +18,70 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cfloader = "0.1"
+cfloader = "0.2"
 ```
 
-This crate is using `async` and requires `Tokio`.
+This crate uses `async` and requires Tokio.
 
 ## Example
+
+### Flash a firmware zip
+
+```rust
+use cfloader::firmware;
+use cfloader::flasher::{self, FlashConfig};
+use cfloader::boot_entry::BootMode;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let zip_data = std::fs::read("firmware-cf2-2024.01.zip")?;
+    let (_info, images) = firmware::parse_firmware_zip(&zip_data)?;
+
+    let link_context = crazyflie_link::LinkContext::new();
+    flasher::flash(&link_context, FlashConfig {
+        boot_mode: BootMode::Warm { uri: "radio://0/80/2M/E7E7E7E7E7".into() },
+        uri: Some("radio://0/80/2M/E7E7E7E7E7".into()),
+        images,
+        progress: None,
+        toc_cache: crazyflie_lib::NoTocCache,
+    }).await?;
+
+    Ok(())
+}
+```
+
+### Flash a single binary
+
+```rust
+use cfloader::firmware::{self, FlashTarget};
+use cfloader::flasher::{self, FlashConfig};
+use cfloader::boot_entry::BootMode;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let bin = std::fs::read("cf2.bin")?;
+    let image = firmware::firmware_from_binary(
+        bin,
+        FlashTarget::Stm32 { start_override: None },
+        "cf2.bin".into(),
+    );
+
+    let link_context = crazyflie_link::LinkContext::new();
+    flasher::flash(&link_context, FlashConfig {
+        boot_mode: BootMode::Warm { uri: "radio://0/80/2M/E7E7E7E7E7".into() },
+        uri: None,
+        images: vec![image],
+        progress: None,
+        toc_cache: crazyflie_lib::NoTocCache,
+    }).await?;
+
+    Ok(())
+}
+```
+
+### Low-level bootloader access
+
+The low-level API is still available for direct bootloader communication:
 
 ```rust
 use cfloader::{Bllink, CFLoader};
@@ -30,11 +91,8 @@ async fn main() -> anyhow::Result<()> {
     let bllink = Bllink::new(None).await?;
     let mut loader = CFLoader::new(bllink).await?;
 
-    // Flash firmware to STM32
     let firmware = std::fs::read("firmware.bin")?;
     loader.flash_stm32(0x8000, &firmware).await?;
-
-    // Reset to normal operation
     loader.reset_to_firmware().await?;
     Ok(())
 }
