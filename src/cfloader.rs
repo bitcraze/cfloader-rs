@@ -2,6 +2,8 @@
 // Provide connectivity to both bootloader on the nRF and STM32
 // as well as high-level algorithm to program the Crazyflie 2.x
 
+use std::time::Duration;
+
 use crate::Bllink;
 use crate::bootloader::{self, Bootloader};
 use crate::packets::InfoPacket;
@@ -450,6 +452,77 @@ impl CFLoader {
         self.bllink.send(&reset_command).await?;
 
         Ok(())
+    }
+
+    /// Restart the nRF51 into its bootloader rather than into the firmware
+    ///
+    /// This is needed after replacing the nRF51 bootloader and softdevice:
+    /// the device has to restart for the new bootloader to take over, but it
+    /// must come back up in the bootloader so it can still be talked to.
+    ///
+    /// The link itself is connectionless, so it stays usable across the
+    /// restart, but it is moved to the bootloader's own address, which is
+    /// also returned. Call [`CFLoader::refresh_info`] afterwards to pick up
+    /// the new bootloader's info.
+    pub async fn reset_to_bootloader(&mut self) -> anyhow::Result<[u8; 5]> {
+        // The restart command answers with the address the bootloader will
+        // listen on once it comes back, which is derived from the device and
+        // is not the address it was reached on: a Crazyflie entered through
+        // the rescue bootloader answers on the default address but returns
+        // here on its own. The link has to follow it.
+        let reset_init_command = vec![0xFF, bootloader::TARGET_NRF51, 0xFF];
+        let response = self
+            .bllink
+            .request(&reset_init_command, Duration::from_millis(100))
+            .await?;
+
+        if response.len() < 7 {
+            return Err(anyhow::anyhow!(
+                "Bootloader did not report an address to restart on (got {} bytes)",
+                response.len()
+            ));
+        }
+
+        // The four bytes are sent little endian and prefixed with 0xB1.
+        let address = [0xB1, response[6], response[5], response[4], response[3]];
+
+        let reset_command = vec![0xFF, bootloader::TARGET_NRF51, 0xF0, 0x00];
+        self.bllink.send(&reset_command).await?;
+        self.bllink.set_address(address);
+
+        Ok(address)
+    }
+
+    /// Re-read the info packets from both bootloaders
+    ///
+    /// The info is cached when the loader is created, so this is how you pick
+    /// up a change — after a restart, or after a new bootloader and softdevice
+    /// have been flashed and the flash layout has moved.
+    ///
+    /// Retries for up to `timeout`, since a device that has just been reset
+    /// takes a moment to answer again.
+    pub async fn refresh_info(&mut self, timeout: Duration) -> anyhow::Result<()> {
+        let deadline = std::time::Instant::now() + timeout;
+
+        loop {
+            match self.nrf51.get_info(&mut self.bllink).await {
+                Ok(nrf51_info) => {
+                    self.nrf51_info = nrf51_info;
+                    self.stm32_info = self.stm32.get_info(&mut self.bllink).await?;
+                    return Ok(());
+                }
+                Err(e) if std::time::Instant::now() >= deadline => {
+                    return Err(anyhow::anyhow!(
+                        "Bootloader did not respond within {:?}: {}",
+                        timeout,
+                        e
+                    ));
+                }
+                Err(_) => {}
+            }
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
 
