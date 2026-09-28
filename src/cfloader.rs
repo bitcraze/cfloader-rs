@@ -8,6 +8,12 @@ use crate::Bllink;
 use crate::bootloader::{self, Bootloader};
 use crate::packets::InfoPacket;
 
+/// How long to wait between attempts at re-reading the bootloader info.
+///
+/// Only the gap between attempts: how long the whole retry is allowed to take
+/// is the caller's `timeout` in [`CFLoader::refresh_info`].
+const INFO_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+
 /// High-level interface for Crazyflie 2.x bootloader operations
 ///
 /// This struct provides a convenient way to interact with both the nRF51822 and STM32F405
@@ -493,6 +499,17 @@ impl CFLoader {
         Ok(address)
     }
 
+    /// Read the info packets from both bootloaders
+    ///
+    /// Both are read before either is returned, so a caller never has to deal
+    /// with one of them having been updated and the other not.
+    async fn read_info(&mut self) -> anyhow::Result<(InfoPacket, InfoPacket)> {
+        let nrf51_info = self.nrf51.get_info(&mut self.bllink).await?;
+        let stm32_info = self.stm32.get_info(&mut self.bllink).await?;
+
+        Ok((nrf51_info, stm32_info))
+    }
+
     /// Re-read the info packets from both bootloaders
     ///
     /// The info is cached when the loader is created, so this is how you pick
@@ -500,28 +517,45 @@ impl CFLoader {
     /// have been flashed and the flash layout has moved.
     ///
     /// Retries for up to `timeout`, since a device that has just been reset
-    /// takes a moment to answer again.
+    /// takes a moment to answer again. Both bootloaders have to answer within
+    /// that window: after a restart the nRF51 can be ready before the STM32
+    /// is, so a read that gets only one of them is retried like any other
+    /// failure rather than reported.
+    ///
+    /// The cached info is replaced only once both packets have been read, so
+    /// a call that times out leaves the loader exactly as it was.
     pub async fn refresh_info(&mut self, timeout: Duration) -> anyhow::Result<()> {
-        let deadline = std::time::Instant::now() + timeout;
+        let mut last_error: Option<anyhow::Error> = None;
 
-        loop {
-            match self.nrf51.get_info(&mut self.bllink).await {
-                Ok(nrf51_info) => {
-                    self.nrf51_info = nrf51_info;
-                    self.stm32_info = self.stm32.get_info(&mut self.bllink).await?;
-                    return Ok(());
+        // One bound around the retries and the waits between them. Each read
+        // already retries inside [`Bllink::request`], so an attempt can take
+        // considerably longer than it is given here; without an outer timeout
+        // a single attempt can overshoot `timeout` on its own, and the loop
+        // would still start another one afterwards.
+        let refreshed = tokio::time::timeout(timeout, async {
+            loop {
+                match self.read_info().await {
+                    Ok(info) => return info,
+                    // Keep the reason around: if we never succeed, the last
+                    // failure says more than the bare timeout does.
+                    Err(e) => last_error = Some(e),
                 }
-                Err(e) if std::time::Instant::now() >= deadline => {
-                    return Err(anyhow::anyhow!(
-                        "Bootloader did not respond within {:?}: {}",
-                        timeout,
-                        e
-                    ));
-                }
-                Err(_) => {}
+
+                tokio::time::sleep(INFO_RETRY_INTERVAL).await;
             }
+        })
+        .await;
 
-            tokio::time::sleep(Duration::from_millis(100)).await;
+        match refreshed {
+            Ok((nrf51_info, stm32_info)) => {
+                self.nrf51_info = nrf51_info;
+                self.stm32_info = stm32_info;
+                Ok(())
+            }
+            Err(_) => Err(match last_error {
+                Some(e) => anyhow::anyhow!("Bootloader did not respond within {:?}: {}", timeout, e),
+                None => anyhow::anyhow!("Bootloader did not respond within {:?}", timeout),
+            }),
         }
     }
 
