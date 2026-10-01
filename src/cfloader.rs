@@ -517,7 +517,9 @@ impl CFLoader {
     /// have been flashed and the flash layout has moved.
     ///
     /// Retries for up to `timeout`, since a device that has just been reset
-    /// takes a moment to answer again. Both bootloaders have to answer within
+    /// takes a moment to answer again. The deadline governs when a further
+    /// attempt may start rather than cutting one short: see the note in the
+    /// body on why a read is never cancelled. Both bootloaders have to answer within
     /// that window: after a restart the nRF51 can be ready before the STM32
     /// is, so a read that gets only one of them is retried like any other
     /// failure rather than reported.
@@ -525,37 +527,40 @@ impl CFLoader {
     /// The cached info is replaced only once both packets have been read, so
     /// a call that times out leaves the loader exactly as it was.
     pub async fn refresh_info(&mut self, timeout: Duration) -> anyhow::Result<()> {
-        let mut last_error: Option<anyhow::Error> = None;
+        let deadline = std::time::Instant::now() + timeout;
 
-        // One bound around the retries and the waits between them. Each read
-        // already retries inside [`Bllink::request`], so an attempt can take
-        // considerably longer than it is given here; without an outer timeout
-        // a single attempt can overshoot `timeout` on its own, and the loop
-        // would still start another one afterwards.
-        let refreshed = tokio::time::timeout(timeout, async {
-            loop {
-                match self.read_info().await {
-                    Ok(info) => return info,
-                    // Keep the reason around: if we never succeed, the last
-                    // failure says more than the bare timeout does.
-                    Err(e) => last_error = Some(e),
+        loop {
+            // A read is deliberately never cancelled, so this is not wrapped
+            // in `tokio::time::timeout`. The shared radio keeps one response
+            // channel per instance, and the radio thread delivers a result to
+            // it whether or not anyone is still waiting; abandoning a
+            // transfer mid-flight therefore leaves its result queued, and the
+            // next transfer would take it as its own. The deadline instead
+            // decides whether another attempt may start, which lets an
+            // attempt already under way overshoot it by at most one read —
+            // around 200 ms with the retry settings in `bllink`.
+            match self.read_info().await {
+                // Both packets are replaced together, so a failed read leaves
+                // the previous pair in place rather than a mixed one.
+                Ok((nrf51_info, stm32_info)) => {
+                    self.nrf51_info = nrf51_info;
+                    self.stm32_info = stm32_info;
+                    return Ok(());
                 }
+                Err(e) => {
+                    // The last failure says more than the bare timeout does.
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    if remaining.is_zero() {
+                        return Err(anyhow::anyhow!(
+                            "Bootloader did not respond within {:?}: {}",
+                            timeout,
+                            e
+                        ));
+                    }
 
-                tokio::time::sleep(INFO_RETRY_INTERVAL).await;
+                    tokio::time::sleep(INFO_RETRY_INTERVAL.min(remaining)).await;
+                }
             }
-        })
-        .await;
-
-        match refreshed {
-            Ok((nrf51_info, stm32_info)) => {
-                self.nrf51_info = nrf51_info;
-                self.stm32_info = stm32_info;
-                Ok(())
-            }
-            Err(_) => Err(match last_error {
-                Some(e) => anyhow::anyhow!("Bootloader did not respond within {:?}: {}", timeout, e),
-                None => anyhow::anyhow!("Bootloader did not respond within {:?}", timeout),
-            }),
         }
     }
 
