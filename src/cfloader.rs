@@ -186,6 +186,14 @@ impl CFLoader {
             ));
         }
 
+        // Pad the last page with 0xFF. Only the bytes sent are loaded into the
+        // bootloader's buffer, so the rest of a partial last page would be
+        // flashed with whatever the previous chunk left there, and fail the
+        // CRC verification that expects 0xFF.
+        let image_len = image.len();
+        let mut padded = image.to_vec();
+        padded.resize(image_len.div_ceil(page_size) * page_size, 0xFF);
+        let image = &padded[..];
 
         let mut bytes_written = 0;
         let mut current_address = start_address;
@@ -233,7 +241,7 @@ impl CFLoader {
             
             // Call progress callback if provided
             if let Some(callback) = progress_callback {
-                callback(bytes_written, image.len());
+                callback(bytes_written.min(image_len), image_len);
             }
         }
 
