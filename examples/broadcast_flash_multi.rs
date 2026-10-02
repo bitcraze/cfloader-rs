@@ -57,7 +57,11 @@ async fn restart_and_get_bllink(context: &LinkContext, uri: &str) -> Result<(Bll
     let addr = reset_and_get_bootloader_address(&link).await?;
     link.close().await;
 
-    let bllink = Bllink::new(Some(&addr)).await?;
+    // Use the link context's radio rather than opening the Crazyradio a second
+    // time. With a second handle, retrying after a setup that timed out failed
+    // with UsbError(Busy).
+    let radio = context.get_radio(0).await?;
+    let bllink = Bllink::new_with_radio(radio, Some(&addr)).await?;
     Ok((bllink, addr))
 }
 
@@ -154,7 +158,20 @@ async fn main() -> Result<()> {
     let mut bl_addresses: Vec<[u8; 5]> = Vec::new();
 
     for (i, uri) in args.uris.iter().enumerate() {
-        let addr = reset_and_setup_device(&context, uri, i + 1, &args.broadcast_address).await?;
+        // Getting a Crazyflie into its bootloader occasionally hangs, so give
+        // up on an attempt after 10 s and try again
+        let mut attempt = 0;
+        let addr = loop {
+            attempt += 1;
+            let setup = reset_and_setup_device(&context, uri, i + 1, &args.broadcast_address);
+            match tokio::time::timeout(Duration::from_secs(10), setup).await {
+                Ok(Ok(addr)) => break addr,
+                Ok(Err(e)) if attempt < 3 => println!("  Setup failed ({}), retrying", e),
+                Err(_) if attempt < 3 => println!("  Setup timed out after 10 s, retrying"),
+                Ok(Err(e)) => return Err(e),
+                Err(_) => anyhow::bail!("Device {}: setup timed out 3 times", i + 1),
+            }
+        };
         bl_addresses.push(addr);
     }
     drop(context);
