@@ -73,6 +73,7 @@ pub struct CFLoader {
     nrf51_info: InfoPacket,
     stm32_info: InfoPacket,
     broadcast_packet_delay: Duration,
+    broadcast_load_passes: usize,
 }
 
 impl CFLoader {
@@ -107,6 +108,7 @@ impl CFLoader {
             nrf51_info,
             stm32_info,
             broadcast_packet_delay: Duration::ZERO,
+            broadcast_load_passes: 2,
         })
     }
 
@@ -116,6 +118,17 @@ impl CFLoader {
     /// bootloaders keep up with. A pause only spreads the packets out in time.
     pub fn set_broadcast_packet_delay(&mut self, delay: Duration) {
         self.broadcast_packet_delay = delay;
+    }
+
+    /// Set how many times each chunk is loaded into the buffers when broadcasting (default 2)
+    ///
+    /// Broadcast packets are not acknowledged, so a Crazyflie that misses one
+    /// LOAD_BUFFER ends up with a wrong page, which then has to be fixed over
+    /// unicast. Loading every chunk twice, as two passes so that a short burst
+    /// of interference can't take both copies, makes that very unlikely. Each
+    /// pass adds about 0.7 ms per 25 bytes of image.
+    pub fn set_broadcast_load_passes(&mut self, passes: usize) {
+        self.broadcast_load_passes = passes.max(1);
     }
 
     /// Get a formatted string with info from both bootloaders
@@ -514,9 +527,11 @@ impl CFLoader {
     ///
     /// Sends LOAD_BUFFER and WRITE_FLASH commands on the broadcast address so all
     /// Crazyflies in range receive the firmware simultaneously. No per-device
-    /// acknowledgment is used: WRITE_FLASH is sent a few times, and the next
-    /// chunk waits for the worst-case erase and programming time of the pages
-    /// written. The last page is padded with 0xFF. Use
+    /// acknowledgment is used: each chunk is loaded in two passes by default
+    /// (see [`set_broadcast_load_passes`](Self::set_broadcast_load_passes)),
+    /// WRITE_FLASH is sent a few times, and the next chunk waits for the
+    /// worst-case erase and programming time of the pages written. The last
+    /// page is padded with 0xFF. Use
     /// [`verify_flash_crc`](Self::verify_flash_crc) on each device individually
     /// afterward to confirm success, and
     /// [`fix_failed_pages`](Self::fix_failed_pages) for the pages that differ.
@@ -580,8 +595,10 @@ impl CFLoader {
             let current_page = (current_address / page_size as u32) as u16;
             let pages_needed = ((chunk_size + page_size - 1) / page_size) as u16;
 
-            // Load chunk to buffer via broadcast
-            self.broadcast_load_chunk_to_buffer(target, chunk, page_size).await?;
+            // Load chunk to buffer via broadcast, in as many passes as configured
+            for _ in 0..self.broadcast_load_passes {
+                self.broadcast_load_chunk_to_buffer(target, chunk, page_size).await?;
+            }
 
             // Send write_flash via broadcast (repeat a few times for reliability)
             for _ in 0..3 {
