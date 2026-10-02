@@ -20,6 +20,9 @@ const CMD_READ_BUFFER: u8 = 0x15;
 const CMD_WRITE_FLASH: u8 = 0x18;
 const CMD_FLASH_STATUS: u8 = 0x19;
 const CMD_READ_FLASH: u8 = 0x1C;
+const CMD_PAGE_CRC: u8 = 0x20;
+const CMD_SET_BROADCAST_ADDRESS: u8 = 0x21;
+const CMD_RANGE_CRC: u8 = 0x22;
 const CMD_RESET_INIT: u8 = 0xFF;
 const CMD_RESET: u8 = 0xF0;
 const CMD_ALLOFF: u8 = 0x01;
@@ -33,7 +36,7 @@ pub const TARGET_STM32: u8 = 0xFF;
 pub const TARGET_NRF51: u8 = 0xFE;
 
 // Default short timeout for bootloader operations that should return directly
-const SHORT_TIMEOUT: Duration = Duration::from_millis(10);
+const SHORT_TIMEOUT: Duration = Duration::from_millis(100);
 // Timeout for flash operation, flash operation can take up to one second to complete
 const FLASH_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -93,6 +96,28 @@ impl Bootloader {
     /// An empty result indicating success or failure
     pub async fn set_address(&self, bllink: &mut Bllink, address: &[u8; 5]) -> anyhow::Result<()> {
         let mut command = vec![0xff, self.target, CMD_SET_ADDRESS];
+        command.extend_from_slice(address);
+        bllink.send(&command).await?;
+        Ok(())
+    }
+
+    /// Set the broadcast address on the bootloader and enable broadcast reception
+    ///
+    /// This command configures the nRF51 radio to also listen on the specified
+    /// broadcast address. Until this command is sent, the bootloader only listens
+    /// on its unicast address. This must be sent via unicast to each device
+    /// before starting broadcast firmware operations.
+    ///
+    /// # Arguments
+    ///
+    /// * `bllink` - The Bllink interface to use for communication
+    /// * `address` - The 5-byte broadcast address to enable
+    ///
+    /// # Returns
+    ///
+    /// An empty result indicating success or failure
+    pub async fn set_broadcast_address(&self, bllink: &mut Bllink, address: &[u8; 5]) -> anyhow::Result<()> {
+        let mut command = vec![0xff, self.target, CMD_SET_BROADCAST_ADDRESS];
         command.extend_from_slice(address);
         bllink.send(&command).await?;
         Ok(())
@@ -327,6 +352,105 @@ impl Bootloader {
         // No response expected
         let _ = bllink.send(&command).await;
         Ok(())
+    }
+
+    /// Get the CRC32 checksum of a flash page
+    ///
+    /// Queries the bootloader for the CRC32 of a single flash page.
+    /// This is used to verify flash contents without reading back the entire page.
+    ///
+    /// # Arguments
+    ///
+    /// * `bllink` - The Bllink interface to use for communication
+    /// * `page` - The flash page number to checksum
+    ///
+    /// # Returns
+    ///
+    /// A `PageCrcPacket` containing the page number and its CRC32
+    pub async fn page_crc(&self, bllink: &mut Bllink, page: u16) -> anyhow::Result<PageCrcPacket> {
+        let mut command = vec![0xff, self.target, CMD_PAGE_CRC];
+        command.extend_from_slice(&page.to_le_bytes());
+
+        let response = bllink.request(&command, SHORT_TIMEOUT).await?;
+        PageCrcPacket::from_bytes(&response[2..])
+    }
+
+    /// Get the CRC32 checksum of any byte range of the flash
+    ///
+    /// The bootloader calculates the checksum while the request waits, which
+    /// takes up to about 1.5 us per byte on the nRF51, so the timeout grows
+    /// with the length.
+    ///
+    /// # Arguments
+    ///
+    /// * `bllink` - The Bllink interface to use for communication
+    /// * `address` - Start of the range, counted from the start of the flash
+    /// * `length` - Length of the range in bytes
+    ///
+    /// # Returns
+    ///
+    /// A `RangeCrcPacket` with the CRC32 of the range, or an error if the
+    /// range is outside of the flash
+    pub async fn range_crc(&self, bllink: &mut Bllink, address: u32, length: u32) -> anyhow::Result<RangeCrcPacket> {
+        let mut command = vec![0xff, self.target, CMD_RANGE_CRC];
+        command.extend_from_slice(&address.to_le_bytes());
+        command.extend_from_slice(&length.to_le_bytes());
+
+        let timeout = SHORT_TIMEOUT + Duration::from_micros(length as u64 * 4);
+        let response = bllink.request(&command, timeout).await?;
+        let packet = RangeCrcPacket::from_bytes(&response[2..])?;
+        if packet.error != 0 {
+            return Err(anyhow::anyhow!(
+                "Range 0x{:08X}+{} is outside of the flash (error {})", address, length, packet.error
+            ));
+        }
+        Ok(packet)
+    }
+
+    /// Load data into the bootloader's RAM buffer via broadcast
+    ///
+    /// Same as [`load_buffer`](Self::load_buffer) but sends on the broadcast address
+    /// so all Crazyflies in range receive the data simultaneously.
+    /// No acknowledgment is expected.
+    ///
+    /// # Arguments
+    ///
+    /// * `bllink` - The Bllink interface to use for broadcast
+    /// * `page` - The page number in the buffer
+    /// * `address` - The address offset within the page
+    /// * `data` - The data to load (maximum 25 bytes)
+    pub async fn broadcast_load_buffer(&self, bllink: &mut Bllink, page: u16, address: u16, data: &[u8]) -> anyhow::Result<()> {
+        if data.len() > 25 {
+            return Err(anyhow::anyhow!("Data too large for buffer load (max 25 bytes)"));
+        }
+
+        let mut command = vec![0xff, self.target, CMD_LOAD_BUFFER];
+        command.extend_from_slice(&page.to_le_bytes());
+        command.extend_from_slice(&address.to_le_bytes());
+        command.extend_from_slice(data);
+
+        bllink.send_broadcast(&command).await
+    }
+
+    /// Write buffer contents to flash memory via broadcast
+    ///
+    /// Same as [`write_flash`](Self::write_flash) but sends on the broadcast address.
+    /// No response is expected - the caller must wait for flash to complete
+    /// and verify via [`page_crc`](Self::page_crc) on each device individually.
+    ///
+    /// # Arguments
+    ///
+    /// * `bllink` - The Bllink interface to use for broadcast
+    /// * `buffer_page` - The starting page in the buffer to read from
+    /// * `flash_page` - The starting page in flash to write to
+    /// * `n_pages` - The number of pages to write
+    pub async fn broadcast_write_flash(&self, bllink: &mut Bllink, buffer_page: u16, flash_page: u16, n_pages: u16) -> anyhow::Result<()> {
+        let mut command = vec![0xff, self.target, CMD_WRITE_FLASH];
+        command.extend_from_slice(&buffer_page.to_le_bytes());
+        command.extend_from_slice(&flash_page.to_le_bytes());
+        command.extend_from_slice(&n_pages.to_le_bytes());
+
+        bllink.send_broadcast(&command).await
     }
 
     /// Get the battery voltage (nRF51822 specific)
