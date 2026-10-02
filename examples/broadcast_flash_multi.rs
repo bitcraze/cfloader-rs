@@ -73,37 +73,32 @@ async fn reset_and_get_bootloader_address(link: &crazyflie_link::Connection) -> 
     link.send_packet(packet).await?;
 
     // Send RESET_INIT to get the device address, again every 200 ms until it
-    // is answered: the request or its answer can be lost
+    // is answered: the request or its answer can be lost. The deadline and the
+    // resend are checked on every packet received, since the link keeps
+    // delivering other packets, about one per millisecond, while waiting.
     let reset_init: Packet = vec![0xFF, TARGET_NRF51, 0xFF].into();
-    link.send_packet(reset_init.clone()).await?;
-    let mut last_sent = tokio::time::Instant::now();
-
-    let mut bl_address = [0u8; 5];
     let deadline = tokio::time::Instant::now() + Duration::from_millis(2000);
-    loop {
-        let packet = tokio::select! {
-            result = link.recv_packet() => result?,
-            _ = sleep(Duration::from_millis(100)) => {
-                if tokio::time::Instant::now() >= deadline {
-                    anyhow::bail!("Timeout waiting for bootloader address response");
-                }
-                if last_sent.elapsed() >= Duration::from_millis(200) {
-                    link.send_packet(reset_init.clone()).await?;
-                    last_sent = tokio::time::Instant::now();
-                }
-                continue;
-            }
+    let mut last_sent: Option<tokio::time::Instant> = None;
+
+    let bl_address = loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            anyhow::bail!("Timeout waiting for bootloader address response");
+        }
+        if last_sent.map_or(true, |sent| now - sent >= Duration::from_millis(200)) {
+            link.send_packet(reset_init.clone()).await?;
+            last_sent = Some(now);
+        }
+        let wait_until = (last_sent.unwrap() + Duration::from_millis(200)).min(deadline);
+        let Ok(packet) = tokio::time::timeout_at(wait_until, link.recv_packet()).await else {
+            continue;
         };
+        let packet = packet?;
         let data = packet.get_data();
         if data.len() > 5 && data[0..2] == [TARGET_NRF51, 0xFF] {
-            bl_address[0] = 0xb1;
-            bl_address[1] = data[5];
-            bl_address[2] = data[4];
-            bl_address[3] = data[3];
-            bl_address[4] = data[2];
-            break;
+            break [0xB1, data[5], data[4], data[3], data[2]];
         }
-    }
+    };
 
     // Send RESET command (to bootloader) multiple times for reliability
     for _ in 0..10 {
@@ -160,12 +155,16 @@ async fn main() -> Result<()> {
     // --- Phase 1: Jump each device to bootloader, verify, and arm broadcast ---
     println!("\n=== Phase 1: Reset & Setup ===");
 
+    // Open the Crazyradio once and keep this handle for the whole run: the
+    // links to the firmware and every Bllink share it, instead of the radio
+    // being closed and opened again for each Crazyflie
     let context = LinkContext::new();
+    let radio = context.get_radio(0).await?;
     let mut bl_addresses: Vec<[u8; 5]> = Vec::new();
 
     for (i, uri) in args.uris.iter().enumerate() {
-        // Getting a Crazyflie into its bootloader occasionally hangs, so give
-        // up on an attempt after 10 s and try again
+        // Safety net: give up on a setup that hasn't finished after 10 s and
+        // try again
         let mut attempt = 0;
         let addr = loop {
             attempt += 1;
@@ -188,7 +187,7 @@ async fn main() -> Result<()> {
     println!("\n=== Phase 2: Broadcast ===");
 
     // Connect to first device for bootloader info (page sizes, etc)
-    let bllink = Bllink::new(Some(&bl_addresses[0])).await?;
+    let bllink = Bllink::new_with_radio(radio.clone(), Some(&bl_addresses[0])).await?;
     let mut loader = CFLoader::new(bllink).await?;
     loader.bllink_mut().set_broadcast_address(&args.broadcast_address);
 
@@ -213,8 +212,6 @@ async fn main() -> Result<()> {
         })).await?;
         println!("\n  Done in {:.1}s", start.elapsed().as_secs_f64());
     }
-
-    let radio = loader.bllink_mut().radio().clone();
 
     // --- Phase 3: Verify & fix (unicast, per-device) ---
     println!("\n=== Phase 3: Verify & Fix ===");
