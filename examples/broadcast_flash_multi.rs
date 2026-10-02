@@ -72,9 +72,11 @@ async fn reset_and_get_bootloader_address(link: &crazyflie_link::Connection) -> 
     let packet: Packet = vec![0xFF, TARGET_NRF51, 0xFF, 0x05, 0x00].into();
     link.send_packet(packet).await?;
 
-    // Send RESET_INIT to get the device address
-    let packet: Packet = vec![0xFF, TARGET_NRF51, 0xFF].into();
-    link.send_packet(packet).await?;
+    // Send RESET_INIT to get the device address, again every 200 ms until it
+    // is answered: the request or its answer can be lost
+    let reset_init: Packet = vec![0xFF, TARGET_NRF51, 0xFF].into();
+    link.send_packet(reset_init.clone()).await?;
+    let mut last_sent = tokio::time::Instant::now();
 
     let mut bl_address = [0u8; 5];
     let deadline = tokio::time::Instant::now() + Duration::from_millis(2000);
@@ -84,6 +86,10 @@ async fn reset_and_get_bootloader_address(link: &crazyflie_link::Connection) -> 
             _ = sleep(Duration::from_millis(100)) => {
                 if tokio::time::Instant::now() >= deadline {
                     anyhow::bail!("Timeout waiting for bootloader address response");
+                }
+                if last_sent.elapsed() >= Duration::from_millis(200) {
+                    link.send_packet(reset_init.clone()).await?;
+                    last_sent = tokio::time::Instant::now();
                 }
                 continue;
             }
