@@ -86,6 +86,22 @@ impl Bllink {
         &self.address
     }
 
+    /// Get the radio channel this Bllink talks on
+    pub fn channel(&self) -> u8 {
+        self.channel.into()
+    }
+
+    /// Talk on another radio channel (0 to 125)
+    ///
+    /// This only changes where this Bllink sends its packets. Moving a
+    /// Crazyflie in its bootloader to another channel is done with
+    /// [`CFLoader::set_channel`](crate::CFLoader::set_channel).
+    pub fn set_channel(&mut self, channel: u8) -> anyhow::Result<()> {
+        self.channel = crazyradio::Channel::from_number(channel)
+            .map_err(|e| anyhow::anyhow!("Invalid radio channel {}: {}", channel, e))?;
+        Ok(())
+    }
+
     /// Get the broadcast address this Bllink sends broadcast packets to
     pub fn broadcast_address(&self) -> &[u8; 5] {
         &self.broadcast_address

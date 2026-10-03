@@ -23,6 +23,7 @@ const CMD_READ_FLASH: u8 = 0x1C;
 const CMD_PAGE_CRC: u8 = 0x20;
 const CMD_SET_BROADCAST_ADDRESS: u8 = 0x21;
 const CMD_RANGE_CRC: u8 = 0x22;
+const CMD_SET_CHANNEL: u8 = 0x23;
 const CMD_RESET_INIT: u8 = 0xFF;
 const CMD_RESET: u8 = 0xF0;
 const CMD_ALLOFF: u8 = 0x01;
@@ -120,6 +121,30 @@ impl Bootloader {
         let mut command = vec![0xff, self.target, CMD_SET_BROADCAST_ADDRESS];
         command.extend_from_slice(address);
         bllink.send(&command).await?;
+        Ok(())
+    }
+
+    /// Move the nRF51 bootloader to another radio channel
+    ///
+    /// The bootloader acknowledges the command and changes channel at the
+    /// start of its next radio timeslot, a few milliseconds later. It stays
+    /// on the new channel until it is restarted. There is no answer, since it
+    /// would have to go out on the new channel; see
+    /// [`CFLoader::set_channel`](crate::CFLoader::set_channel), which follows
+    /// the Crazyflie there and checks that it answers.
+    ///
+    /// A missing acknowledgement does not mean the command was lost: the
+    /// bootloader may have moved and the acknowledgement been lost. Each
+    /// attempt is kept short, since resending on the old channel is useless
+    /// once it has moved.
+    ///
+    /// # Arguments
+    ///
+    /// * `bllink` - The Bllink interface to use for communication
+    /// * `channel` - The new radio channel, 0 to 125
+    pub async fn set_channel(&self, bllink: &mut Bllink, channel: u8) -> anyhow::Result<()> {
+        let command = vec![0xff, self.target, CMD_SET_CHANNEL, channel];
+        bllink.send_with_timeout(&command, Duration::from_millis(50)).await?;
         Ok(())
     }
 

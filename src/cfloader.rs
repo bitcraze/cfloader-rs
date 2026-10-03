@@ -902,6 +902,53 @@ impl CFLoader {
         Ok(())
     }
 
+    /// Move this Crazyflie to another radio channel and follow it there
+    ///
+    /// Sends SET_CHANNEL to the nRF51 bootloader, moves this CFLoader to the
+    /// same channel and checks that the bootloader answers there. The
+    /// Crazyflie stays on the new channel until it is restarted.
+    ///
+    /// This lets several Crazyradios, each on its own channel, work on
+    /// different Crazyflies at the same time, for example to write
+    /// per-Crazyflie data after a firmware broadcast on the common channel.
+    ///
+    /// # Arguments
+    /// * `channel` - The new radio channel, 0 to 125. Keep the channels used
+    ///   at the same time a few apart: a 2 Mbit/s channel is about 2 MHz wide.
+    pub async fn set_channel(&mut self, channel: u8) -> anyhow::Result<()> {
+        let old_channel = self.bllink.channel();
+        crazyradio::Channel::from_number(channel)
+            .map_err(|e| anyhow::anyhow!("Invalid radio channel {}: {}", channel, e))?;
+
+        // The bootloader moves as soon as it has the command, so a missing
+        // acknowledgement does not mean it stayed: look on the new channel first
+        let sent = self.nrf51.set_channel(&mut self.bllink, channel).await;
+        self.bllink.set_channel(channel)?;
+        if self.nrf51.get_info(&mut self.bllink).await.is_ok() {
+            return Ok(());
+        }
+
+        // Not on the new channel: the command may not have arrived, or the
+        // bootloader may not know it
+        self.bllink.set_channel(old_channel)?;
+        if self.nrf51.get_info(&mut self.bllink).await.is_ok() {
+            return Err(match sent {
+                Ok(()) => anyhow::anyhow!(
+                    "The Crazyflie stayed on channel {}, its bootloader may not support SET_CHANNEL",
+                    old_channel
+                ),
+                Err(e) => anyhow::anyhow!(
+                    "SET_CHANNEL did not reach the Crazyflie, it is still on channel {}: {}",
+                    old_channel, e
+                ),
+            });
+        }
+        Err(anyhow::anyhow!(
+            "The Crazyflie answers on neither channel {} nor {}",
+            channel, old_channel
+        ))
+    }
+
     /// Broadcast flash the STM32 with progress callback
     pub async fn broadcast_flash_stm32_with_progress<F>(
         &mut self,
