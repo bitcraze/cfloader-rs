@@ -45,5 +45,9 @@ mod cfloader;
 pub mod packets;
 
 pub use bllink::Bllink;
+pub use bllink::BROADCAST_ADDRESS;
 pub use bootloader::Bootloader;
 pub use cfloader::CFLoader;
+
+/// Re-export crazyradio so downstream crates use the same version
+pub use crazyradio;
