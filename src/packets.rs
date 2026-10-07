@@ -200,14 +200,19 @@ impl Debug for InfoPacket {
             .field("flash_start", &self.flash_start)
             .field("cpu_id", &self.cpu_id)
             .field("version", &self.version)
+            .field("firmware_version", &self.firmware_version)
             .finish()
     }
 }
 
 impl Display for InfoPacket {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "InfoPacket {{ page_size: {}, n_buff_page: {}, n_flash_page: {}, flash_start: {}, cpu_id: {:?}, version: {} }}",
-               self.page_size, self.n_buff_page, self.n_flash_page, self.flash_start, self.cpu_id, self.version)
+        write!(f, "InfoPacket {{ page_size: {}, n_buff_page: {}, n_flash_page: {}, flash_start: {}, cpu_id: {:?}, version: {}, firmware_version: ",
+               self.page_size, self.n_buff_page, self.n_flash_page, self.flash_start, self.cpu_id, self.version)?;
+        match self.firmware_version {
+            Some(firmware_version) => write!(f, "{} }}", firmware_version),
+            None => write!(f, "none }}"),
+        }
     }
 }
 
@@ -459,6 +464,17 @@ mod bootloader_version_tests {
         assert_eq!(info.firmware_version(), None);
         assert_eq!(info.version(), 0x10);
         assert_eq!(info.page_size(), 1024);
+    }
+
+    #[test]
+    fn the_bootloader_version_is_printed() {
+        let info = InfoPacket::from_bytes(&info_bytes(&[0xE8, 0x07, 10, 0])).unwrap();
+        assert!(info.to_string().ends_with("version: 16, firmware_version: 2024.10.0 }"));
+        assert!(format!("{:?}", info).contains("firmware_version: Some("));
+
+        let info = InfoPacket::from_bytes(&info_bytes(&[])).unwrap();
+        assert!(info.to_string().ends_with("version: 16, firmware_version: none }"));
+        assert!(format!("{:?}", info).contains("firmware_version: None"));
     }
 
     /// The S110 bootloader stops right after the CPU ID, without even a

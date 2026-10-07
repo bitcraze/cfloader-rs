@@ -469,7 +469,9 @@ impl CFLoader {
     /// The link itself is connectionless, so it stays usable across the
     /// restart, but it is moved to the bootloader's own address, which is
     /// also returned. Call [`CFLoader::refresh_info`] afterwards to pick up
-    /// the new bootloader's info.
+    /// the new bootloader's info. That is also what confirms the restart:
+    /// the restart command itself is not checked for an ack, see the note in
+    /// the body.
     pub async fn reset_to_bootloader(&mut self) -> anyhow::Result<[u8; 5]> {
         // The restart command answers with the address the bootloader will
         // listen on once it comes back, which is derived from the device and
@@ -492,8 +494,17 @@ impl CFLoader {
         // The four bytes are sent little endian and prefixed with 0xB1.
         let address = [0xB1, response[6], response[5], response[4], response[3]];
 
+        // Whether the restart was acked is deliberately ignored. `send` keeps
+        // resending for about 10 s, on the same link that just carried the
+        // exchange above, so a device still listening on this address would
+        // almost certainly ack one of the resends. A failure therefore means
+        // the device got the command but its ack was lost, and it has already
+        // restarted onto the new address where nothing is listening for the
+        // resends. Returning the error here would also lose that address. The
+        // link is moved regardless and `refresh_info` confirms the bootloader
+        // came back; if the uplink really was lost, that is where it fails.
         let reset_command = vec![0xFF, bootloader::TARGET_NRF51, 0xF0, 0x00];
-        self.bllink.send(&reset_command).await?;
+        let _ = self.bllink.send(&reset_command).await;
         self.bllink.set_address(address);
 
         Ok(address)
