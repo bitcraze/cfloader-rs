@@ -391,13 +391,20 @@ impl Bootloader {
     ///
     /// # Returns
     ///
-    /// A `PageCrcPacket` containing the page number and its CRC32
+    /// A `PageCrcPacket` containing the page number and its CRC32, or an
+    /// error if the page is outside of the flash
     pub async fn page_crc(&self, bllink: &mut Bllink, page: u16) -> anyhow::Result<PageCrcPacket> {
         let mut command = vec![0xff, self.target, CMD_PAGE_CRC];
         command.extend_from_slice(&page.to_le_bytes());
 
         let response = bllink.request(&command, SHORT_TIMEOUT).await?;
-        PageCrcPacket::from_bytes(&response[2..])
+        let packet = PageCrcPacket::from_bytes(&response[2..])?;
+        if packet.error != 0 {
+            return Err(anyhow::anyhow!(
+                "Page {} is outside of the flash (error {})", page, packet.error
+            ));
+        }
+        Ok(packet)
     }
 
     /// Get the CRC32 checksum of any byte range of the flash

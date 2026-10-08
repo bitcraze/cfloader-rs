@@ -291,6 +291,8 @@ pub struct PageCrcPacket {
     pub page: u16,
     /// The CRC32 checksum of the page
     pub crc32: u32,
+    /// 0 if OK, 1 if the page is outside of the flash
+    pub error: u8,
 }
 
 impl PageCrcPacket {
@@ -298,19 +300,20 @@ impl PageCrcPacket {
     ///
     /// # Arguments
     ///
-    /// * `bytes` - Raw byte slice containing the response data (minimum 7 bytes)
+    /// * `bytes` - Raw byte slice containing the response data (minimum 8 bytes)
     ///
     /// # Errors
     ///
-    /// Returns an error if `bytes` is shorter than 7 bytes, so that a corrupted
+    /// Returns an error if `bytes` is shorter than 8 bytes, so that a corrupted
     /// radio packet does not take the caller down
     pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
-        if bytes.len() < 7 {
-            anyhow::bail!("Invalid PageCrcPacket length: expected at least 7 bytes, got {}", bytes.len());
+        if bytes.len() < 8 {
+            anyhow::bail!("Invalid PageCrcPacket length: expected at least 8 bytes, got {}", bytes.len());
         }
         Ok(PageCrcPacket {
             page: u16::from_le_bytes([bytes[1], bytes[2]]),
             crc32: u32::from_le_bytes([bytes[3], bytes[4], bytes[5], bytes[6]]),
+            error: bytes[7],
         })
     }
 }
@@ -369,6 +372,7 @@ impl Debug for PageCrcPacket {
         f.debug_struct("PageCrcPacket")
             .field("page", &self.page)
             .field("crc32", &format_args!("0x{:08X}", self.crc32))
+            .field("error", &self.error)
             .finish()
     }
 }
@@ -418,10 +422,15 @@ mod tests {
 
     #[test]
     fn page_crc_reply_is_parsed() {
-        // [command, page (LE), crc32 (LE)]
-        let packet = PageCrcPacket::from_bytes(&[0x20, 0x34, 0x01, 0x78, 0x56, 0x34, 0x12]).unwrap();
+        // [command, page (LE), crc32 (LE), error]
+        let packet = PageCrcPacket::from_bytes(&[0x20, 0x34, 0x01, 0x78, 0x56, 0x34, 0x12, 0x00]).unwrap();
         assert_eq!(packet.page, 0x0134);
         assert_eq!(packet.crc32, 0x12345678);
+        assert_eq!(packet.error, 0);
+
+        let packet = PageCrcPacket::from_bytes(&[0x20, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x01]).unwrap();
+        assert_eq!(packet.page, 0x0400);
+        assert_eq!(packet.error, 1);
     }
 
     #[test]
@@ -437,7 +446,7 @@ mod tests {
 
     #[test]
     fn short_crc_replies_are_errors() {
-        assert!(PageCrcPacket::from_bytes(&[0x20, 0x34, 0x01]).is_err());
+        assert!(PageCrcPacket::from_bytes(&[0x20, 0x34, 0x01, 0x78, 0x56, 0x34, 0x12]).is_err());
         assert!(RangeCrcPacket::from_bytes(&[0x22; 13]).is_err());
     }
 }
