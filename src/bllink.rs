@@ -15,10 +15,13 @@ use std::time::Duration;
 pub struct Bllink {
     radio: SharedCrazyradio,
     address: [u8; 5],
+    broadcast_address: [u8; 5],
     channel: crazyradio::Channel,
 }
 
 const DEFAULT_ADDRESS: [u8; 5] = [0xE7, 0xE7, 0xE7, 0xE7, 0xE7];
+/// Default broadcast address used for sending firmware data to all Crazyflies simultaneously
+pub const BROADCAST_ADDRESS: [u8; 5] = [0xBC, 0xE7, 0xE7, 0xE7, 0xE7];
 const BOOTLOADER_CHANNEL: u8 = 0; // Bootloader channel
 const MAX_RETRIES: usize = 10; // Maximum number of retries for packet transmission
 
@@ -41,7 +44,12 @@ impl Bllink {
         let radio = Crazyradio::open_first_async().await?;
         let radio = SharedCrazyradio::new(radio);
 
-        Ok(Bllink { radio, channel: crazyradio::Channel::from_number(BOOTLOADER_CHANNEL).unwrap(), address: *address })
+        Ok(Bllink {
+            radio,
+            channel: crazyradio::Channel::from_number(BOOTLOADER_CHANNEL).unwrap(),
+            address: *address,
+            broadcast_address: BROADCAST_ADDRESS,
+        })
     }
 
     /// Create a new Bllink instance with an existing radio
@@ -59,9 +67,71 @@ impl Bllink {
     pub async fn new_with_radio(radio: SharedCrazyradio,address: Option<&[u8; 5]>) -> anyhow::Result<Self> {
         let address = address.unwrap_or(&DEFAULT_ADDRESS);
 
-        Ok(Bllink { radio, channel: crazyradio::Channel::from_number(BOOTLOADER_CHANNEL).unwrap(), address: *address })
+        Ok(Bllink {
+            radio,
+            channel: crazyradio::Channel::from_number(BOOTLOADER_CHANNEL).unwrap(),
+            address: *address,
+            broadcast_address: BROADCAST_ADDRESS,
+        })
     }
 
+
+    /// Get a reference to the underlying SharedCrazyradio
+    pub fn radio(&self) -> &SharedCrazyradio {
+        &self.radio
+    }
+
+    /// Get the address used by this Bllink
+    pub fn address(&self) -> &[u8; 5] {
+        &self.address
+    }
+
+    /// Get the radio channel this Bllink talks on
+    pub fn channel(&self) -> u8 {
+        self.channel.into()
+    }
+
+    /// Talk on another radio channel (0 to 125)
+    ///
+    /// This only changes where this Bllink sends its packets. Moving a
+    /// Crazyflie in its bootloader to another channel is done with
+    /// [`CFLoader::set_channel`](crate::CFLoader::set_channel).
+    pub fn set_channel(&mut self, channel: u8) -> anyhow::Result<()> {
+        self.channel = crazyradio::Channel::from_number(channel)
+            .map_err(|e| anyhow::anyhow!("Invalid radio channel {}: {}", channel, e))?;
+        Ok(())
+    }
+
+    /// Get the broadcast address this Bllink sends broadcast packets to
+    pub fn broadcast_address(&self) -> &[u8; 5] {
+        &self.broadcast_address
+    }
+
+    /// Set the broadcast address this Bllink sends broadcast packets to
+    ///
+    /// This only changes where packets are sent. The Crazyflies have to be
+    /// armed with the same address, see [`CFLoader::set_broadcast_address`](crate::CFLoader::set_broadcast_address).
+    /// Different groups of Crazyflies can be armed with different addresses.
+    ///
+    /// # Arguments
+    ///
+    /// * `address` - The 5-byte broadcast address, in the same byte order as the unicast address
+    pub fn set_broadcast_address(&mut self, address: &[u8; 5]) {
+        self.broadcast_address = *address;
+    }
+
+    /// Send a packet on the broadcast address without expecting any response
+    ///
+    /// This is used for broadcast firmware operations where all Crazyflies
+    /// in range receive the packet simultaneously.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - The packet data to send
+    pub async fn send_broadcast(&mut self, data: &[u8]) -> anyhow::Result<()> {
+        self.radio.send_packet_no_ack_async(self.channel, self.broadcast_address, data.to_vec()).await
+            .map_err(|e| anyhow::anyhow!("Broadcast send error: {}", e))
+    }
 
     /// Send a packet as request, expect one packet as response matching the request data
     ///

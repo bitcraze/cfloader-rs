@@ -282,6 +282,101 @@ impl Debug for FlashReadPacket {
     }
 }
 
+/// Response from a page CRC query
+///
+/// Contains the CRC32 checksum of a single flash page, used to verify
+/// flash contents without reading back the entire page.
+pub struct PageCrcPacket {
+    /// The flash page number
+    pub page: u16,
+    /// The CRC32 checksum of the page
+    pub crc32: u32,
+    /// 0 if OK, 1 if the page is outside of the flash
+    pub error: u8,
+}
+
+impl PageCrcPacket {
+    /// Create a PageCrcPacket from raw bytes
+    ///
+    /// # Arguments
+    ///
+    /// * `bytes` - Raw byte slice containing the response data (minimum 8 bytes)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `bytes` is shorter than 8 bytes, so that a corrupted
+    /// radio packet does not take the caller down
+    pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+        if bytes.len() < 8 {
+            anyhow::bail!("Invalid PageCrcPacket length: expected at least 8 bytes, got {}", bytes.len());
+        }
+        Ok(PageCrcPacket {
+            page: u16::from_le_bytes([bytes[1], bytes[2]]),
+            crc32: u32::from_le_bytes([bytes[3], bytes[4], bytes[5], bytes[6]]),
+            error: bytes[7],
+        })
+    }
+}
+
+/// Response from a range CRC query
+///
+/// Contains the CRC32 checksum of an arbitrary byte range of the flash.
+pub struct RangeCrcPacket {
+    /// Start of the range, counted from the start of the flash
+    pub address: u32,
+    /// Length of the range in bytes
+    pub length: u32,
+    /// The CRC32 checksum of the range
+    pub crc32: u32,
+    /// 0 if OK, 1 if the range is outside of the flash
+    pub error: u8,
+}
+
+impl RangeCrcPacket {
+    /// Create a RangeCrcPacket from raw bytes
+    ///
+    /// # Arguments
+    ///
+    /// * `bytes` - Raw byte slice containing the response data (minimum 14 bytes)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `bytes` is shorter than 14 bytes, so that a corrupted
+    /// radio packet does not take the caller down
+    pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+        if bytes.len() < 14 {
+            anyhow::bail!("Invalid RangeCrcPacket length: expected at least 14 bytes, got {}", bytes.len());
+        }
+        Ok(RangeCrcPacket {
+            address: u32::from_le_bytes(bytes[1..5].try_into().unwrap()),
+            length: u32::from_le_bytes(bytes[5..9].try_into().unwrap()),
+            crc32: u32::from_le_bytes(bytes[9..13].try_into().unwrap()),
+            error: bytes[13],
+        })
+    }
+}
+
+impl Debug for RangeCrcPacket {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.debug_struct("RangeCrcPacket")
+            .field("address", &format_args!("0x{:08X}", self.address))
+            .field("length", &self.length)
+            .field("crc32", &format_args!("0x{:08X}", self.crc32))
+            .field("error", &self.error)
+            .finish()
+    }
+}
+
+impl Debug for PageCrcPacket {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.debug_struct("PageCrcPacket")
+            .field("page", &self.page)
+            .field("crc32", &format_args!("0x{:08X}", self.crc32))
+            .field("error", &self.error)
+            .finish()
+    }
+}
+
 /// Error codes for flash operations
 ///
 /// Represents the possible error conditions that can occur during flash
@@ -318,5 +413,40 @@ impl Display for FlashError {
             FlashError::FlashEraseFailed => write!(f, "Flash erase failed"),
             FlashError::FlashProgrammingFailed => write!(f, "Flash programming failed"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_crc_reply_is_parsed() {
+        // [command, page (LE), crc32 (LE), error]
+        let packet = PageCrcPacket::from_bytes(&[0x20, 0x34, 0x01, 0x78, 0x56, 0x34, 0x12, 0x00]).unwrap();
+        assert_eq!(packet.page, 0x0134);
+        assert_eq!(packet.crc32, 0x12345678);
+        assert_eq!(packet.error, 0);
+
+        let packet = PageCrcPacket::from_bytes(&[0x20, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x01]).unwrap();
+        assert_eq!(packet.page, 0x0400);
+        assert_eq!(packet.error, 1);
+    }
+
+    #[test]
+    fn range_crc_reply_is_parsed() {
+        // [command, address (LE), length (LE), crc32 (LE), error]
+        let bytes = [0x22, 0x00, 0x40, 0x00, 0x00, 0x50, 0x91, 0x04, 0x00, 0xEF, 0xBE, 0xAD, 0xDE, 0x01];
+        let packet = RangeCrcPacket::from_bytes(&bytes).unwrap();
+        assert_eq!(packet.address, 0x4000);
+        assert_eq!(packet.length, 299344);
+        assert_eq!(packet.crc32, 0xDEADBEEF);
+        assert_eq!(packet.error, 1);
+    }
+
+    #[test]
+    fn short_crc_replies_are_errors() {
+        assert!(PageCrcPacket::from_bytes(&[0x20, 0x34, 0x01, 0x78, 0x56, 0x34, 0x12]).is_err());
+        assert!(RangeCrcPacket::from_bytes(&[0x22; 13]).is_err());
     }
 }
