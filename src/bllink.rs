@@ -63,6 +63,14 @@ impl Bllink {
     }
 
 
+    /// Point this link at a different address
+    ///
+    /// The bootloader moves to its own address when it is restarted, so the
+    /// link has to follow it. See `CFLoader::reset_to_bootloader`.
+    pub fn set_address(&mut self, address: [u8; 5]) {
+        self.address = address;
+    }
+
     /// Send a packet as request, expect one packet as response matching the request data
     ///
     /// This method sends a packet and waits for a response packet that starts with the same data as the request.

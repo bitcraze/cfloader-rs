@@ -78,7 +78,7 @@ impl Bootloader {
     pub async fn get_info(&self, bllink: &mut Bllink) -> anyhow::Result<InfoPacket> {
         let get_info_command = vec![0xff, self.target, CMD_GET_INFO];
         let response = bllink.request(&get_info_command, SHORT_TIMEOUT).await?;
-        Ok(InfoPacket::from_bytes(&response[2..]))
+        InfoPacket::from_bytes(&response[2..])
     }
 
     /// Set the bootloader address
