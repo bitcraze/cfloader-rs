@@ -15,7 +15,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cfloader = "0.1"
+cfloader = "0.2"
 ```
 
 This crate is using `async` and requires `Tokio`.
