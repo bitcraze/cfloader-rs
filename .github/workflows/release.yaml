@@ -1,0 +1,42 @@
+name: Publish to crates.io
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write     # Required for OIDC token exchange
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0    # Full history so the main-branch ancestry check is reliable
+
+    # Verify the tagged commit is on main and the tag matches the crate version
+    - name: Verify commit is on main
+      run: |
+        git fetch origin main
+        if ! git merge-base --is-ancestor HEAD origin/main; then
+          echo "This workflow can only be run on a commit that is on the main branch."
+          exit 1
+        fi
+    - id: check_version
+      name: Check version consistency between Git tag and Cargo.toml
+      env:
+        TAG_VERSION: ${{ github.ref_name }}
+      run: |
+        CARGO_VERSION=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[0].version')
+        if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+          echo "Tag version ($TAG_VERSION) does not match Cargo.toml version ($CARGO_VERSION)"
+          exit 1
+        fi
+
+    # Publish to crates.io using OIDC for authentication
+    - uses: rust-lang/crates-io-auth-action@v1
+      id: auth
+    - run: cargo publish
+      env:
+        CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
